@@ -12,7 +12,6 @@ use map_model::{
 use sim::{AgentID, Sim, UnzoomedAgent, VehicleType};
 use widgetry::{Color, Drawable, EventCtx, GeomBatch, GfxCtx, Prerender};
 
-use crate::app::App;
 use crate::colors::ColorScheme;
 use crate::helpers::ID;
 use crate::options::Options;
@@ -25,6 +24,7 @@ use crate::render::road::DrawRoad;
 use crate::render::{
     draw_vehicle, unzoomed_agent_radius, DrawArea, DrawPedCrowd, DrawPedestrian, Renderable,
 };
+use crate::AppLike;
 
 pub struct DrawMap {
     pub roads: Vec<DrawRoad>,
@@ -288,7 +288,7 @@ impl DrawMap {
         &'a self,
         ctx: &EventCtx,
         id: ID,
-        app: &App,
+        app: &dyn AppLike,
         agents: &'a mut AgentCache,
     ) -> Option<&'a dyn Renderable> {
         let on = match id {
@@ -309,21 +309,12 @@ impl DrawMap {
             }
             ID::Car(id) => {
                 // Cars might be parked in a garage!
-                app.primary.sim.get_draw_car(id, &app.primary.map)?.on
+                app.sim().get_draw_car(id, app.map())?.on
             }
-            ID::Pedestrian(id) => {
-                app.primary
-                    .sim
-                    .get_draw_ped(id, &app.primary.map)
-                    .unwrap()
-                    .on
-            }
+            ID::Pedestrian(id) => app.sim().get_draw_ped(id, app.map()).unwrap().on,
             ID::PedCrowd(ref members) => {
                 // If the first member has vanished, just give up
-                app.primary
-                    .sim
-                    .get_draw_ped(members[0], &app.primary.map)?
-                    .on
+                app.sim().get_draw_ped(members[0], app.map())?.on
             }
             ID::BusStop(id) => {
                 return Some(self.get_bs(id));
@@ -333,13 +324,7 @@ impl DrawMap {
             }
         };
 
-        agents.populate_if_needed(
-            on,
-            &app.primary.map,
-            &app.primary.sim,
-            &app.cs,
-            ctx.prerender,
-        );
+        agents.populate_if_needed(on, app.map(), app.sim(), app.cs(), ctx.prerender);
 
         // Why might this fail? Pedestrians merge into crowds, and crowds dissipate into
         // individuals
@@ -414,19 +399,19 @@ impl AgentCache {
     pub fn calculate_unzoomed_agents<P: AsRef<Prerender>>(
         &mut self,
         prerender: &mut P,
-        app: &App,
+        app: &dyn AppLike,
     ) -> &QuadTree<AgentID> {
-        let now = app.primary.sim.time();
+        let now = app.sim().time();
         let mut recalc = true;
         if let Some((time, ref orig_agents, _, _)) = self.unzoomed {
-            if now == time && app.unzoomed_agents == orig_agents.clone() {
+            if now == time && app.unzoomed_agents() == orig_agents {
                 recalc = false;
             }
         }
 
         if recalc {
             let mut batch = GeomBatch::new();
-            let mut quadtree = QuadTree::default(app.primary.map.get_bounds().as_bbox());
+            let mut quadtree = QuadTree::default(app.map().get_bounds().as_bbox());
             // It's quite silly to produce triangles for the same circle over and over again. ;)
             let car_circle = Circle::new(
                 Pt2D::new(0.0, 0.0),
@@ -436,8 +421,8 @@ impl AgentCache {
             let ped_circle =
                 Circle::new(Pt2D::new(0.0, 0.0), unzoomed_agent_radius(None)).to_polygon();
 
-            for agent in app.primary.sim.get_unzoomed_agents(&app.primary.map) {
-                if let Some(color) = app.unzoomed_agents.color(&agent) {
+            for agent in app.sim().get_unzoomed_agents(app.map()) {
+                if let Some(color) = app.unzoomed_agents().color(&agent) {
                     let circle = if agent.id.to_vehicle_type().is_some() {
                         car_circle.translate(agent.pos.x(), agent.pos.y())
                     } else {
@@ -450,25 +435,25 @@ impl AgentCache {
 
             let draw = prerender.as_ref().upload(batch);
 
-            self.unzoomed = Some((now, app.unzoomed_agents.clone(), quadtree, draw));
+            self.unzoomed = Some((now, app.unzoomed_agents().clone(), quadtree, draw));
         }
 
         &self.unzoomed.as_ref().unwrap().2
     }
 
-    pub fn draw_unzoomed_agents(&mut self, g: &mut GfxCtx, app: &App) {
+    pub fn draw_unzoomed_agents(&mut self, g: &mut GfxCtx, app: &dyn AppLike) {
         self.calculate_unzoomed_agents(g, app);
         g.redraw(&self.unzoomed.as_ref().unwrap().3);
 
-        if app.opts.debug_all_agents {
+        if app.opts().debug_all_agents {
             let mut cnt = 0;
-            for input in app.primary.sim.get_all_draw_cars(&app.primary.map) {
+            for input in app.sim().get_all_draw_cars(app.map()) {
                 cnt += 1;
-                draw_vehicle(input, &app.primary.map, g.prerender, &app.cs);
+                draw_vehicle(input, app.map(), g.prerender, app.cs());
             }
             println!(
                 "At {}, debugged {} cars",
-                app.primary.sim.time(),
+                app.sim().time(),
                 abstutil::prettyprint_usize(cnt)
             );
             // Pedestrians aren't the ones crashing
